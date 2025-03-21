@@ -1,0 +1,149 @@
+import os
+import wave
+import json
+import subprocess
+import tempfile
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext
+from vosk import Model, KaldiRecognizer
+from pydub import AudioSegment
+from pydub.utils import which
+
+# Указываем пути к ffmpeg и ffprobe (замените на свои пути)
+FFMPEG_PATH = r"C:\Path\To\ffmpeg.exe"
+FFPROBE_PATH = r"C:\Path\To\ffprobe.exe"
+
+# Добавляем их в переменные окружения
+os.environ["PATH"] += os.pathsep + os.path.dirname(FFMPEG_PATH)
+os.environ["FFMPEG_BINARY"] = FFMPEG_PATH
+os.environ["FFPROBE_BINARY"] = FFPROBE_PATH
+
+# Настраиваем pydub
+AudioSegment.converter = which("ffmpeg") or FFMPEG_PATH
+AudioSegment.ffprobe = which("ffprobe") or FFPROBE_PATH
+
+def check_ffmpeg():
+    """Проверяет, доступен ли ffmpeg и ffprobe."""
+    try:
+        subprocess.run([FFMPEG_PATH, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        subprocess.run([FFPROBE_PATH, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        print("✅ FFmpeg и FFprobe работают!")
+        return True
+    except Exception as e:
+        messagebox.showerror("Ошибка", f"FFmpeg/FFprobe не работают: {e}")
+        return False
+
+# Проверяем FFmpeg один раз
+FFMPEG_AVAILABLE = check_ffmpeg()
+
+def convert_audio_to_wav(audio_path):
+    """Конвертирует аудиофайл в WAV (моно, 16 бит, 16 кГц)."""
+    if not FFMPEG_AVAILABLE:
+        return None
+
+    temp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
+    try:
+        audio = AudioSegment.from_file(audio_path)
+        audio = audio.set_channels(1).set_frame_rate(16000).set_sample_width(2)
+        audio.export(temp_wav, format="wav")
+        return temp_wav
+    except Exception as e:
+        messagebox.showerror("Ошибка", f"Ошибка при конвертации аудио: {e}")
+        return None
+
+def audio_to_text(audio_file_path, model_path):
+    """Преобразует аудиофайл в текст с использованием Vosk."""
+    if not os.path.exists(model_path):
+        messagebox.showerror("Ошибка", f"Модель {model_path} не найдена!")
+        return None
+
+    print("Загрузка модели Vosk...")
+    model = Model(model_path)
+
+    temp_wav = None
+    if not audio_file_path.lower().endswith(".wav"):
+        print("Конвертация в WAV...")
+        temp_wav = convert_audio_to_wav(audio_file_path)
+        if not temp_wav:
+            return None
+        audio_file_path = temp_wav
+
+    try:
+        with wave.open(audio_file_path, "rb") as wf:
+            recognizer = KaldiRecognizer(model, wf.getframerate())
+
+            results = []
+            while True:
+                data = wf.readframes(4000)
+                if len(data) == 0:
+                    break
+                if recognizer.AcceptWaveform(data):
+                    result = json.loads(recognizer.Result())
+                    results.append(result.get("text", ""))
+
+            final_result = json.loads(recognizer.FinalResult())
+            results.append(final_result.get("text", ""))
+
+            text = " ".join(results).strip()
+            print("✅ Распознанный текст:", text)
+            return text
+    except Exception as e:
+        messagebox.showerror("Ошибка", f"Ошибка при обработке аудиофайла: {e}")
+        return None
+    finally:
+        if temp_wav and os.path.exists(temp_wav):
+            os.remove(temp_wav)
+
+def save_text_to_file(text):
+    """Сохраняет текст в файл."""
+    save_file_path = filedialog.asksaveasfilename(
+        title="Сохранить текст как",
+        defaultextension=".txt",
+        filetypes=[("Текстовые файлы", "*.txt")]
+    )
+    if save_file_path:
+        try:
+            with open(save_file_path, "w", encoding="utf-8") as file:
+                file.write(text)
+            messagebox.showinfo("Успех", f"Текст успешно сохранен в файл: {save_file_path}")
+        except Exception as e:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить файл: {e}")
+
+def upload_audio():
+    """Выбор аудиофайла и обработка."""
+    audio_file_path = filedialog.askopenfilename(
+        title="Выберите аудиофайл",
+        filetypes=[("Аудиофайлы", "*.mp3 *.wav *.aac *.flac")]
+    )
+    if audio_file_path:
+        model_path = r"C:\Path\To\vosk-model-small-ru-0.22"  # Укажите путь к модели Vosk
+        text = audio_to_text(audio_file_path, model_path)
+        if text:
+            text_area.delete("1.0", tk.END)
+            text_area.insert(tk.END, text)
+
+def save_current_text():
+    """Сохраняет текст из текстового виджета."""
+    text = text_area.get("1.0", tk.END).strip()
+    if text:
+        save_text_to_file(text)
+    else:
+        messagebox.showwarning("Предупреждение", "Нет текста для сохранения!")
+
+# Создание GUI
+root = tk.Tk()
+root.title("Аудио в текст (Vosk)")
+
+frame = tk.Frame(root)
+frame.pack(pady=10)
+
+upload_button = tk.Button(frame, text="Загрузить аудио", command=upload_audio)
+upload_button.grid(row=0, column=0, padx=10, pady=5)
+
+save_button = tk.Button(frame, text="Сохранить текст", command=save_current_text)
+save_button.grid(row=0, column=1, padx=10, pady=5)
+
+text_area = scrolledtext.ScrolledText(root, wrap=tk.WORD, width=60, height=15)
+text_area.pack(padx=10, pady=10)
+
+root.mainloop()
